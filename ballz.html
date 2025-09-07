@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ballz Clone Enhanced</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: linear-gradient(135deg, #1e3c72, #2a5298);
+      overflow: hidden;
+    }
+
+    #gameContainer {
+      position: relative;
+      width: 480px;
+      height: 600px;
+      /* Adjusted height to fit within the screen */
+      margin: 20px auto;
+    }
+
+    canvas {
+      display: block;
+      background: #111;
+      border-radius: 16px;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+    }
+
+    #info {
+      position: relative;
+      text-align: center;
+      color: #fff;
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 20px;
+      margin-bottom: 10px;
+      /* Add spacing above the game */
+    }
+
+    #info span {
+      margin-right: 20px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="info">
+    <span>Balls: <strong id="ballCount">1</strong></span>
+    <span>Level: <strong id="levelCount">1</strong></span>
+    <span>Best: <strong id="bestScore">0</strong></span>
+  </div>
+  <div id="gameContainer">
+    <canvas id="gameCanvas" width="480" height="500"></canvas>
+  </div>
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const infoBalls = document.getElementById('ballCount');
+    const infoLevel = document.getElementById('levelCount');
+    const infoBest  = document.getElementById('bestScore');
+
+    const BLOCK_SIZE = 54;
+    const BALL_RADIUS = 6;
+    const BALL_SPEED = 7;
+    const RELEASE_DELAY = 80;
+    const COLORS = ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#3498db','#9b59b6'];
+
+    const PADDLE_WIDTH = 100;
+    const PADDLE_HEIGHT = 10;
+    const PADDLE_SPEED = 6; // Increased paddle speed for faster response
+    let paddleX = (canvas.width - PADDLE_WIDTH) / 2;
+
+    let totalBalls = 1;
+    let bestScore = parseInt(localStorage.getItem('ballzBest')) || 0;
+    infoBest.textContent = bestScore;
+    let level = 1;
+    infoLevel.textContent = level;
+
+    let balls = [], blocks = [], pickups = [];
+    let spawnX = canvas.width / 2;
+    let aimAngle = -Math.PI/4;
+    let shooting = false;
+    let released = 0;
+    let nextRelease = 0;
+
+    const keyState = {}; // Object to track active keys
+
+    document.addEventListener('keydown', (e) => {
+      keyState[e.key] = true; // Mark key as active
+    });
+
+    document.addEventListener('keyup', (e) => {
+      keyState[e.key] = false; // Mark key as inactive
+    });
+
+    function handlePaddleMovement() {
+      if (keyState['ArrowLeft'] || keyState['a']) {
+        paddleX = Math.max(0, paddleX - PADDLE_SPEED);
+      }
+      if (keyState['ArrowRight'] || keyState['d']) {
+        paddleX = Math.min(canvas.width - PADDLE_WIDTH, paddleX + PADDLE_SPEED);
+      }
+    }
+
+    class Ball {
+      constructor(x, y, vx, vy) {
+        this.x = x;
+        this.y = y;
+        this.vx = vx;
+        this.vy = vy;
+        this.returned = false;
+      }
+      update() {
+        const prevX = this.x;
+        const prevY = this.y;
+
+        this.x += this.vx;
+        this.y += this.vy;
+
+        // Bounce off walls
+        if (this.x < BALL_RADIUS || this.x > canvas.width - BALL_RADIUS) {
+          this.vx *= -1;
+        }
+        if (this.y < BALL_RADIUS) {
+          this.vy *= -1;
+        }
+
+        // Handle block collisions
+        blocks.forEach(b => {
+          if (
+            !b.removed &&
+            this.x + BALL_RADIUS > b.x && // Check right edge of the ball
+            this.x - BALL_RADIUS < b.x + BLOCK_SIZE && // Check left edge of the ball
+            this.y + BALL_RADIUS > b.y && // Check bottom edge of the ball
+            this.y - BALL_RADIUS < b.y + BLOCK_SIZE // Check top edge of the ball
+          ) {
+            b.hits--;
+
+            // Determine which side of the block the ball hit
+            const overlapLeft = this.x + BALL_RADIUS - b.x;
+            const overlapRight = b.x + BLOCK_SIZE - (this.x - BALL_RADIUS);
+            const overlapTop = this.y + BALL_RADIUS - b.y;
+            const overlapBottom = b.y + BLOCK_SIZE - (this.y - BALL_RADIUS);
+
+            const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+
+            if (minOverlap === overlapLeft || minOverlap === overlapRight) {
+              this.vx *= -1; // Reverse horizontal velocity
+            } else {
+              this.vy *= -1; // Reverse vertical velocity
+            }
+
+            if (b.hits <= 0) b.removed = true;
+          }
+        });
+
+        // Handle pickup collisions
+        pickups.forEach(p => {
+          const dx = this.x - p.x, dy = this.y - p.y;
+          if (!p.collected && Math.hypot(dx, dy) < BALL_RADIUS + 15) {
+            p.collected = true;
+            totalBalls++;
+            infoBalls.textContent = totalBalls;
+          }
+        });
+
+      }
+      draw() {
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, BALL_RADIUS, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff5733'; // Bright orange for visibility
+        ctx.fill();
+      }
+    }
+    class Block {
+      constructor(x,y,hits) { this.x=x; this.y=y; this.hits=hits; this.removed=false; }
+      draw() {
+        if(this.removed) return;
+        const color = COLORS[(this.hits - 1) % COLORS.length];
+        ctx.fillStyle=color; ctx.fillRect(this.x,this.y,BLOCK_SIZE,BLOCK_SIZE);
+        ctx.strokeStyle='#222'; ctx.lineWidth=2; ctx.strokeRect(this.x,this.y,BLOCK_SIZE,BLOCK_SIZE);
+        ctx.fillStyle='#fff'; ctx.font='24px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText(this.hits, this.x+BLOCK_SIZE/2, this.y+BLOCK_SIZE/2);
+      }
+    }
+    class Pickup {
+      constructor(x,y) { this.x=x; this.y=y; this.collected=false; }
+      draw() {
+        if(this.collected) return;
+        ctx.beginPath(); ctx.arc(this.x,this.y,15,0,Math.PI*2);
+        ctx.fillStyle='#2ecc71'; ctx.fill();
+        ctx.fillStyle='#fff'; ctx.font='18px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('+1', this.x, this.y);
+      }
+    }
+
+    function addRow(initial=false) {
+      const cols = Math.floor(canvas.width/BLOCK_SIZE);
+      blocks.forEach(b => b.y += BLOCK_SIZE);
+      pickups.forEach(p => p.y += BLOCK_SIZE);
+      for(let i=0; i<cols; i++) {
+        if(Math.random() < 0.6) {
+          blocks.push(new Block(i * BLOCK_SIZE, 0, level));
+        } else if(Math.random() < 0.3) {
+          pickups.push(new Pickup(i * BLOCK_SIZE + BLOCK_SIZE / 2, 15));
+        }
+      }
+      if(!initial && blocks.some(b=>!b.removed && b.y+BLOCK_SIZE>canvas.height-20)) {
+        gameOver();
+      }
+    }
+    function gameOver() {
+      const gameOverMessage = document.createElement('div');
+      gameOverMessage.style.position = 'absolute';
+      gameOverMessage.style.top = '50%';
+      gameOverMessage.style.left = '50%';
+      gameOverMessage.style.transform = 'translate(-50%, -50%)';
+      gameOverMessage.style.color = '#fff';
+      gameOverMessage.style.fontSize = '24px';
+      gameOverMessage.style.textAlign = 'center';
+      gameOverMessage.style.background = 'rgba(0, 0, 0, 0.8)';
+      gameOverMessage.style.padding = '20px';
+      gameOverMessage.style.borderRadius = '10px';
+      gameOverMessage.innerHTML = `Game Over!<br>You reached level ${level}`;
+      document.body.appendChild(gameOverMessage);
+
+      setTimeout(() => {
+        document.body.removeChild(gameOverMessage);
+        resetGame();
+      }, 3000);
+    }
+
+    function resetGame() {
+      bestScore = Math.max(bestScore, level);
+      localStorage.setItem('ballzBest', bestScore);
+      infoBest.textContent = bestScore;
+      totalBalls = 1; infoBalls.textContent = totalBalls;
+      level = 1; infoLevel.textContent = level;
+      balls = []; blocks = []; pickups = [];
+      spawnX = canvas.width / 2;
+      addRow(true);
+    }
+
+    canvas.addEventListener('mousemove', e => {
+      if (shooting) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      // Calculate aimAngle based on mouse position
+      aimAngle = -Math.atan2(canvas.height - y, x - spawnX); // Correct angle calculation for upward aiming
+
+      // Restrict aim angle to prevent shooting directly backward
+      const max = -0.1, min = -Math.PI + 0.1;
+      aimAngle = Math.max(Math.min(aimAngle, max), min);
+    });
+
+    canvas.addEventListener('mousedown', (e) => {
+      if (shooting || document.querySelector('div[style*="Game Over"]')) return;
+
+      // Start shooting sequence
+      shooting = true;
+      released = 0;
+      nextRelease = 0;
+      balls = []; // Reset balls for the new shot
+    });
+
+    function drawAimingStick() {
+      if (!shooting) {
+        let x = spawnX;
+        let y = canvas.height;
+        let vx = Math.cos(aimAngle) * BALL_SPEED;
+        let vy = -Math.sin(aimAngle) * BALL_SPEED;
+
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+
+        for (let i = 0; i < 2; i++) { // Simulate one bounce
+          // Calculate next intersection with walls
+          const tX = vx > 0
+            ? (canvas.width - BALL_RADIUS - x) / vx
+            : (BALL_RADIUS - x) / vx;
+          const tY = vy > 0
+            ? (canvas.height - BALL_RADIUS - y) / vy
+            : (BALL_RADIUS - y) / vy;
+
+          const t = Math.min(tX, tY);
+
+          x += vx * t;
+          y += vy * t;
+
+          // Reflect velocity based on the wall hit
+          if (x <= BALL_RADIUS || x >= canvas.width - BALL_RADIUS) vx *= -1;
+          if (y <= BALL_RADIUS || y >= canvas.height - BALL_RADIUS) vy *= -1;
+
+          ctx.lineTo(x, y);
+        }
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]); // Dashed line for aiming
+        ctx.stroke();
+        ctx.setLineDash([]); // Reset line dash
+      }
+    }
+
+    function loop(time) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Handle paddle movement
+      handlePaddleMovement();
+
+      // Draw aiming stick
+      drawAimingStick();
+
+      if (shooting && released < totalBalls && time >= nextRelease) {
+        nextRelease = time + RELEASE_DELAY; // Ensure a minimum delay of RELEASE_DELAY ms between releases
+        const vx = Math.cos(aimAngle) * BALL_SPEED;
+        const vy = Math.sin(aimAngle) * BALL_SPEED; // Ensure vy is consistent with vx calculation
+        balls.push(new Ball(spawnX, canvas.height, vx, vy));
+        released++;
+        nextRelease = time + RELEASE_DELAY;
+      }
+
+      balls.forEach(b => {
+        b.update();
+
+        // Handle paddle collision
+        if (
+          b.y + BALL_RADIUS > canvas.height - PADDLE_HEIGHT &&
+          b.x > paddleX &&
+          b.x < paddleX + PADDLE_WIDTH
+        ) {
+          b.vy *= -1; // Reverse vertical velocity
+          b.y = canvas.height - PADDLE_HEIGHT - BALL_RADIUS; // Prevent sticking to the paddle
+        }
+
+        b.draw();
+      });
+      blocks.forEach(b => b.draw());
+      pickups.forEach(p => p.draw());
+
+      // Ensure all balls return before allowing new shots
+      balls = balls.filter(b => {
+        if (b.y > canvas.height) {
+          if (!b.returned) {
+            spawnX = b.x; // Update spawn position to the last ball's position
+            b.returned = true;
+          }
+          const allReturned = balls.every(x => x.returned);
+          if (allReturned) {
+            shooting = false; // Allow new shots only after all balls return
+            spawnX = canvas.width / 2; // Reset spawn position to the center
+            level++;
+            infoLevel.textContent = level;
+            addRow();
+          }
+          return false;
+        }
+        return true;
+      });
+
+      // Draw paddle
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(paddleX, canvas.height - PADDLE_HEIGHT, PADDLE_WIDTH, PADDLE_HEIGHT);
+
+      ctx.beginPath();
+      ctx.arc(spawnX, canvas.height, 10, 0, Math.PI * 2);
+      ctx.fillStyle = '#ecf0f1';
+      ctx.fill();
+      requestAnimationFrame(loop);
+    }
+
+    addRow(true);
+    requestAnimationFrame(loop);
+  </script>
+</body>
+
+</html>
